@@ -1,20 +1,20 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
-export default function SpinWheel() {
+export default function SpinningWheel() {
   const [rotation, setRotation] = useState(0);
   const [isSpinning, setIsSpinning] = useState(false);
   const [result, setResult] = useState(null);
   const [hasWon, setHasWon] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
   const [claimCode, setClaimCode] = useState('');
   const [spinCount, setSpinCount] = useState(0);
+  const [isReady, setIsReady] = useState(false);
   const [showKeepOrSpin, setShowKeepOrSpin] = useState(false);
   const [pendingPrize, setPendingPrize] = useState(null);
   const [usedExtraSpin, setUsedExtraSpin] = useState(false);
   const [isGrandPrizeCelebration, setIsGrandPrizeCelebration] = useState(false);
   const [pointerFlick, setPointerFlick] = useState(false);
-  const [isReady, setIsReady] = useState(false);
-  const [showConfetti, setShowConfetti] = useState(false);
   
   const audioContext = useRef(null);
 
@@ -53,28 +53,41 @@ export default function SpinWheel() {
           setShowResult(true);
           setResult(prizes.find(p => p.label === data.prize));
           setClaimCode(data.code);
-          setIsReady(true);
         }
+        setSpinCount(data.spinCount || 0);
       }
     } catch (e) {
-      // Ignore localStorage errors
+      // localStorage not available (private browsing) - continue without persistence
     }
   }, []);
 
-  useEffect(() => {
-    // Initialize audio context on first user interaction
-    const initAudio = () => {
-      if (!audioContext.current) {
-        audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-    };
-    window.addEventListener('click', initAudio, { once: true });
-    return () => window.removeEventListener('click', initAudio);
-  }, []);
-
-  // Tick sound effect during spin
-  useEffect(() => {
-    if (!isSpinning) return;
+  // Exact cubic-bezier(0.12, 0.8, 0.2, 1) implementation
+  const cubicBezier = (t) => {
+    // For cubic-bezier(0.12, 0.8, 0.2, 1), we need to solve for y given x=t
+    // Using iterative approximation since cubic bezier is parametric
+    const p1x = 0.12, p1y = 0.8, p2x = 0.2, p2y = 1;
+    
+    // Newton-Raphson to find parameter u where x(u) = t
+    let u = t;
+    for (let i = 0; i < 8; i++) {
+      const x = 3 * (1 - u) * (1 - u) * u * p1x + 3 * (1 - u) * u * u * p2x + u * u * u - t;
+      const dx = 3 * (1 - u) * (1 - u) * p1x + 6 * (1 - u) * u * (p2x - p1x) + 3 * u * u * (1 - p2x);
+      if (Math.abs(x) < 0.0001) break;
+      u -= x / dx;
+    }
+    u = Math.max(0, Math.min(1, u));
+    
+    // Calculate y at parameter u
+    return 3 * (1 - u) * (1 - u) * u * p1y + 3 * (1 - u) * u * u * p2y + u * u * u;
+  };
+  
+  // Play tick and flick arrow when crossing peg boundaries
+  const playSpinTicks = (startRotation, endRotation, durationMs) => {
+    if (!audioContext.current) return;
+    
+    const startTime = performance.now();
+    const totalDegrees = endRotation - startRotation;
+    let lastPegIndex = Math.floor(startRotation / 60); // 6 pegs = 60° apart
     
     const tick = () => {
       if (!audioContext.current) return;
@@ -93,65 +106,72 @@ export default function SpinWheel() {
       setTimeout(() => setPointerFlick(false), 60);
     };
     
-    // Start with fast ticks, slow down
-    let tickCount = 0;
-    const maxTicks = 60;
-    
-    const scheduleTick = () => {
-      if (tickCount >= maxTicks || !isSpinning) return;
+    const animate = (now) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / durationMs, 1);
       
-      tick();
-      flick();
-      tickCount++;
+      // Apply easing to get current rotation
+      const easedProgress = cubicBezier(progress);
+      const currentRotation = startRotation + (totalDegrees * easedProgress);
+      const currentPegIndex = Math.floor(currentRotation / 60);
       
-      // Exponentially increasing delay (slowing down)
-      const baseDelay = 80;
-      const delay = baseDelay + Math.pow(tickCount / maxTicks, 2) * 400;
+      // Check if we crossed a peg boundary
+      if (currentPegIndex > lastPegIndex) {
+        tick();
+        flick();
+        lastPegIndex = currentPegIndex;
+      }
       
-      setTimeout(scheduleTick, delay);
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      }
     };
     
-    // Start ticking after a brief delay
-    const startTimeout = setTimeout(scheduleTick, 200);
-    
-    return () => clearTimeout(startTimeout);
-  }, [isSpinning]);
+    requestAnimationFrame(animate);
+  };
+
+  const initAudio = () => {
+    if (!audioContext.current) {
+      audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
+    }
+  };
 
   const playSound = (type) => {
     if (!audioContext.current) return;
     const ctx = audioContext.current;
     
     if (type === 'win') {
-      const playChime = (freq, delay, duration, vol) => {
+      // Fun slot machine style win sound
+      const playChime = (freq, delay, duration, volume) => {
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.type = 'sine';
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(vol, ctx.currentTime + delay);
+        gain.gain.setValueAtTime(volume, ctx.currentTime + delay);
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + delay + duration);
         osc.start(ctx.currentTime + delay);
         osc.stop(ctx.currentTime + delay + duration);
       };
       
       // Quick ascending "ding ding ding DING!"
-      playChime(784, 0, 0.15, 0.35);
-      playChime(988, 0.1, 0.15, 0.38);
-      playChime(1175, 0.2, 0.15, 0.4);
-      playChime(1568, 0.3, 0.4, 0.5);
+      playChime(784, 0, 0.15, 0.2);
+      playChime(988, 0.1, 0.15, 0.22);
+      playChime(1175, 0.2, 0.15, 0.24);
+      playChime(1568, 0.3, 0.4, 0.3);
       
       // Triumphant chord
       setTimeout(() => {
         [1047, 1319, 1568].forEach((freq) => {
-          playChime(freq, 0, 0.5, 0.3);
+          playChime(freq, 0, 0.5, 0.15);
         });
       }, 500);
       
       // Sparkle flourish
       setTimeout(() => {
         [2093, 2349, 2637, 2793].forEach((freq, i) => {
-          playChime(freq, i * 0.06, 0.2, 0.15);
+          playChime(freq, i * 0.06, 0.2, 0.08);
         });
       }, 700);
     } else if (type === 'jackpot') {
@@ -169,7 +189,7 @@ export default function SpinWheel() {
           gain.connect(ctx.destination);
           osc.type = 'sine';
           osc.frequency.value = freq;
-          gain.gain.setValueAtTime(0.25, ctx.currentTime + delay);
+          gain.gain.setValueAtTime(0.12, ctx.currentTime + delay);
           gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + delay + 0.5);
           osc.start(ctx.currentTime + delay);
           osc.stop(ctx.currentTime + delay + 0.5);
@@ -181,7 +201,7 @@ export default function SpinWheel() {
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.frequency.value = 400;
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.setValueAtTime(0.1, ctx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
       osc.start();
       osc.stop(ctx.currentTime + 0.2);
@@ -195,7 +215,7 @@ export default function SpinWheel() {
         gain.connect(ctx.destination);
         osc.type = 'sine';
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.3, ctx.currentTime + i * 0.1);
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.1);
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + i * 0.1 + 0.4);
         osc.start(ctx.currentTime + i * 0.1);
         osc.stop(ctx.currentTime + i * 0.1 + 0.4);
@@ -210,7 +230,7 @@ export default function SpinWheel() {
         gain.connect(ctx.destination);
         osc.type = 'sine';
         osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.35, ctx.currentTime + i * 0.12);
+        gain.gain.setValueAtTime(0.18, ctx.currentTime + i * 0.12);
         gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + i * 0.12 + 0.5);
         osc.start(ctx.currentTime + i * 0.12);
         osc.stop(ctx.currentTime + i * 0.12 + 0.5);
@@ -224,18 +244,19 @@ export default function SpinWheel() {
           gain.connect(ctx.destination);
           osc.type = 'sine';
           osc.frequency.value = freq;
-          gain.gain.setValueAtTime(0.3, ctx.currentTime);
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
           gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 1);
           osc.start();
           osc.stop(ctx.currentTime + 1);
         });
-      }, 1000);
+      }, 900);
     }
   };
 
   const spin = () => {
     if (isSpinning || hasWon) return;
     
+    initAudio();
     setIsSpinning(true);
     setResult(null);
     
@@ -284,193 +305,235 @@ export default function SpinWheel() {
     const isJackpotSpin = prize.tier === 'jackpot';
     const spinDuration = 11; // Match CSS transition duration
     
-    // Calculate the target rotation for landing on this segment's center
-    const segmentCenterOffset = 330 - (targetPrizeIndex * 60);
+    const spins = isJackpotSpin ? 5 + Math.floor(Math.random() * 2) : 6 + Math.floor(Math.random() * 3);
+    const targetAngle = (330 - targetPrizeIndex * segmentAngle + 360) % 360;
     
-    // Normalize to positive angle
-    const normalizedOffset = ((segmentCenterOffset % 360) + 360) % 360;
-    
-    // Add randomness within segment (-25 to +25 degrees from center to stay within segment)
-    let randomOffset;
-    if (nearMiss) {
-      // For near miss: land at the very edge, 25-28 degrees from center toward Didn't Win
-      // Written Posts (4) is next to Didn't Win (5)
-      // Positive offset moves toward lower index (Didn't Win side)
-      randomOffset = 22 + Math.random() * 4; // 22-26 degrees from center
+    // For jackpot, land near the edge of segment (barely makes it)
+    // For near-miss (Didn't Win), land just barely past Written Posts
+    // For others, land more centered
+    let offset;
+    if (isJackpotSpin) {
+      offset = 22 + Math.random() * 5; // Land near the far edge
+    } else if (nearMiss) {
+      offset = -25 + Math.random() * 3; // Land at very start of segment, barely past the previous one
     } else {
-      randomOffset = (Math.random() - 0.5) * 40;
+      offset = (Math.random() - 0.5) * 30; // ±15° centered
     }
     
-    // Add multiple full rotations (6-9 rotations for more drama)
-    const fullRotations = isJackpotSpin 
-      ? (8 + Math.floor(Math.random() * 3)) * 360  // 8-10 rotations for jackpot
-      : (6 + Math.floor(Math.random() * 3)) * 360; // 6-8 rotations normally
+    // Add to current rotation for cumulative effect
+    const currentNormalized = rotation % 360;
+    let additionalRotation = targetAngle - currentNormalized;
+    if (additionalRotation <= 0) additionalRotation += 360;
     
-    const newRotation = rotation + fullRotations + normalizedOffset + randomOffset;
+    const totalRotation = rotation + (spins * 360) + additionalRotation + offset;
     
-    setRotation(newRotation);
+    setRotation(totalRotation);
     
-    // Show result after spin completes
+    // Simulate peg hits for sound and arrow flicks
+    playSpinTicks(rotation, totalRotation, spinDuration * 1000);
+    
+    // Wheel stops after spinDuration
     setTimeout(() => {
-      setIsSpinning(false);
-      setResult(prize);
-      setSpinCount(prev => prev + 1);
+      // Haptic feedback on mobile
+      if (navigator.vibrate) navigator.vibrate(100);
       
-      if (prize.tier === 'win') {
-        // First spin win - show keep/risk modal
-        if (spinCount === 0) {
+      setResult(prize);
+      setIsSpinning(false);
+      const newSpinCount = spinCount + 1;
+      setSpinCount(newSpinCount);
+      
+      // Delay before showing result screen
+      setTimeout(() => {
+        if (prize.tier === 'retry' || prize.tier === 'lose') {
+          playSound('retry');
+          try {
+            localStorage.setItem('videoHeroWheel', JSON.stringify({ 
+              spinCount: newSpinCount,
+              won: false,
+              usedExtraSpin: usedExtraSpin,
+              timestamp: Date.now() 
+            }));
+          } catch (e) {}
+          // Keep result visible, clear it when they spin again
+        } else if (prize.tier === 'win' && !usedExtraSpin) {
+          // Mid-tier prize - offer choice to keep or spin again
+          playSound('win');
           setPendingPrize(prize);
           setShowKeepOrSpin(true);
-          playSound('win');
-          setShowConfetti(true);
-          setTimeout(() => setShowConfetti(false), 4000);
         } else {
-          // Won on extra spin
-          const code = generateCode(prize.codePrefix);
-          setClaimCode(code);
-          setHasWon(true);
-          setShowResult(true);
-          playSound(usedExtraSpin ? 'grandPrize' : 'win');
-          setShowConfetti(true);
-          setTimeout(() => setShowConfetti(false), 5000);
-          try {
-            localStorage.setItem('videoHeroWheel', JSON.stringify({ won: true, prize: prize.label, code }));
-          } catch (e) {
-            // Ignore localStorage errors
-          }
+          // Jackpot or already used extra spin - finalize
+          finalizePrize(prize, newSpinCount);
         }
-      } else if (prize.tier === 'jackpot') {
-        const code = generateCode(prize.codePrefix);
-        setClaimCode(code);
-        setHasWon(true);
-        setShowResult(true);
-        setIsGrandPrizeCelebration(true);
-        playSound('grandPrize');
-        setShowConfetti(true);
-        setTimeout(() => setShowConfetti(false), 8000);
-        try {
-          localStorage.setItem('videoHeroWheel', JSON.stringify({ won: true, prize: prize.label, code }));
-        } catch (e) {
-          // Ignore localStorage errors
-        }
-      } else if (prize.tier === 'retry') {
-        playSound('retry');
-        setShowResult(true);
-      } else if (prize.tier === 'lose') {
-        setHasWon(true);
-        setShowResult(true);
-        try {
-          localStorage.setItem('videoHeroWheel', JSON.stringify({ won: true, prize: 'lost', code: null }));
-        } catch (e) {
-          // Ignore localStorage errors
-        }
-      }
+      }, 2000);
     }, spinDuration * 1000);
   };
 
-  const keepPrize = () => {
-    if (!pendingPrize) return;
-    const code = generateCode(pendingPrize.codePrefix);
+  const finalizePrize = (prize, count) => {
+    const code = generateCode(prize.codePrefix);
     setClaimCode(code);
     setHasWon(true);
-    setShowKeepOrSpin(false);
-    setShowResult(true);
-    playSound('applause');
+    
     try {
-      localStorage.setItem('videoHeroWheel', JSON.stringify({ won: true, prize: pendingPrize.label, code }));
-    } catch (e) {
-      // Ignore localStorage errors
+      localStorage.setItem('videoHeroWheel', JSON.stringify({ 
+        prize: prize.label, 
+        code: code,
+        spinCount: count,
+        won: true,
+        timestamp: Date.now() 
+      }));
+    } catch (e) {}
+    
+    // Special celebration for grand prize on second spin (they risked it and won big!)
+    const isGrandPrizeOnRisk = prize.tier === 'jackpot' && usedExtraSpin;
+    const isJackpot = prize.tier === 'jackpot';
+    
+    if (isGrandPrizeOnRisk) {
+      setIsGrandPrizeCelebration(true);
+      playSound('grandPrize');
+      setShowConfetti(true);
+      // Extra long confetti for grand prize
+      setTimeout(() => setShowConfetti(false), 8000);
+      // Longer pause to let the moment sink in
+      setTimeout(() => {
+        setShowResult(true);
+      }, 4000);
+    } else if (isJackpot) {
+      // Regular jackpot (shouldn't happen with current logic, but just in case)
+      setIsGrandPrizeCelebration(true); // Use gold confetti
+      playSound('jackpot');
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 6000);
+      setTimeout(() => {
+        playSound('applause');
+        setShowResult(true);
+      }, 3500);
+    } else {
+      setIsGrandPrizeCelebration(false);
+      if (prize.tier === 'jackpot') {
+        playSound('jackpot');
+      } else {
+        playSound('win');
+      }
+      setShowConfetti(true);
+      setTimeout(() => setShowConfetti(false), 5500);
+      
+      // Show result screen after brief delay
+      setTimeout(() => {
+        playSound('applause');
+        setShowResult(true);
+      }, 3000);
     }
+  };
+
+  const keepPrize = () => {
+    setShowKeepOrSpin(false);
+    finalizePrize(pendingPrize, spinCount);
   };
 
   const spinAgainChoice = () => {
+    setShowKeepOrSpin(false);
+    setPendingPrize(null);
+    setResult(null);
     setUsedExtraSpin(true);
-    setShowKeepOrSpin(false);
-    setPendingPrize(null);
-    setResult(null);
-    setShowResult(false);
   };
 
-  const resetWheel = () => {
-    try {
-      localStorage.removeItem('videoHeroWheel');
-    } catch (e) {
-      // Ignore localStorage errors
-    }
-    setRotation(0);
-    setIsSpinning(false);
-    setResult(null);
-    setHasWon(false);
-    setShowResult(false);
-    setClaimCode('');
-    setSpinCount(0);
-    setShowKeepOrSpin(false);
-    setPendingPrize(null);
-    setUsedExtraSpin(false);
-    setIsGrandPrizeCelebration(false);
-    setShowConfetti(false);
-  };
+  const Confetti = () => (
+    <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
+      {[...Array(isGrandPrizeCelebration ? 150 : 70)].map((_, i) => (
+        <div
+          key={i}
+          className="absolute"
+          style={{
+            left: `${Math.random() * 100}%`,
+            top: -20,
+            width: isGrandPrizeCelebration ? 12 : 10,
+            height: isGrandPrizeCelebration ? 12 : 10,
+            backgroundColor: isGrandPrizeCelebration 
+              ? ['#FFD700', '#FFC107', '#FFEB3B', '#7C3AED', '#8B5CF6', '#A78BFA'][Math.floor(Math.random() * 6)]
+              : [BRAND_BLUE, '#6366F1', '#8B5CF6', '#10B981', '#3B82F6', '#60A5FA'][Math.floor(Math.random() * 6)],
+            transform: `rotate(${Math.random() * 360}deg)`,
+            animation: `confettiFall ${1.5 + Math.random() * 1}s linear forwards`,
+            animationDelay: `${Math.random() * 0.3}s`,
+            borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+          }}
+        />
+      ))}
+      <style>{`
+        @keyframes confettiFall {
+          0% { transform: translateY(0) rotate(0deg); }
+          100% { transform: translateY(105vh) rotate(720deg); }
+        }
+      `}</style>
+    </div>
+  );
 
-  // Confetti component
-  const Confetti = () => {
-    const pieces = Array.from({ length: 50 }, (_, i) => ({
-      id: i,
-      left: Math.random() * 100,
-      delay: Math.random() * 2,
-      duration: 2 + Math.random() * 2,
-      color: ['#fbbf24', '#60a5fa', '#34d399', '#f472b6', '#a78bfa'][Math.floor(Math.random() * 5)],
-      size: 8 + Math.random() * 8,
-    }));
+  // Logo removed for now
 
+  // Result screen with code
+  if (showResult && hasWon && result) {
     return (
-      <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden">
-        {pieces.map((piece) => (
-          <div
-            key={piece.id}
-            className="absolute animate-bounce"
-            style={{
-              left: `${piece.left}%`,
-              top: '-20px',
-              width: piece.size,
-              height: piece.size,
-              backgroundColor: piece.color,
-              borderRadius: Math.random() > 0.5 ? '50%' : '0%',
-              animation: `fall ${piece.duration}s ease-in ${piece.delay}s forwards`,
-            }}
-          />
-        ))}
-        <style>{`
-          @keyframes fall {
-            to {
-              transform: translateY(100vh) rotate(720deg);
-              opacity: 0;
-            }
-          }
-        `}</style>
-      </div>
-    );
-  };
-
-  // Grand prize celebration screen
-  if (isGrandPrizeCelebration && result) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center p-4 relative overflow-hidden" style={{ background: 'linear-gradient(180deg, #1e293b 0%, #0f172a 100%)' }}>
+      <div className="min-h-screen flex flex-col items-center justify-center p-6" style={{ background: 'linear-gradient(180deg, #1e293b 0%, #0f172a 100%)' }}>
         {showConfetti && <Confetti />}
-        <div className="text-center z-10">
-          <div className="text-8xl mb-6 animate-bounce">🎁</div>
-          <h1 className="text-4xl sm:text-6xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 mb-4">
-            GRAND PRIZE!
-          </h1>
-          <p className="text-2xl text-white mb-8">{result.description}</p>
-          <div className="bg-slate-800/80 backdrop-blur border border-amber-500/30 rounded-2xl p-8 max-w-md mx-auto">
-            <p className="text-slate-300 mb-2">Your exclusive code:</p>
-            <p className="text-3xl font-mono font-bold text-amber-400 tracking-wider">{claimCode}</p>
-            <p className="text-slate-400 text-sm mt-4">DM this code to @VideoHero on LinkedIn to claim</p>
+        
+        <div className="max-w-sm w-full text-center">
+          {/* Header */}
+          <div className="flex items-center justify-center gap-3 mb-6">
+            <img src={logoSrc} alt="Video Hero" className="w-8 h-8" />
+            <span className="text-white font-bold text-xl tracking-wide">VIDEO HERO</span>
           </div>
+          
+          <div className="text-7xl mb-4">{result.emoji}</div>
+          {result.tier === 'jackpot' ? (
+            <>
+              <p className="text-amber-400 text-sm font-semibold uppercase tracking-wider mb-1">Grand Prize</p>
+              <h1 className="text-3xl font-bold text-white mb-2">
+                You won!
+              </h1>
+            </>
+          ) : (
+            <h1 className="text-3xl font-bold text-white mb-2">
+              You won!
+            </h1>
+          )}
+          <p className="text-xl text-slate-300 mb-6">
+            {result.description}
+          </p>
+          
+          {/* Code display */}
+          <div className="my-8 p-5 bg-slate-800/80 rounded-2xl border border-slate-600">
+            <p className="text-slate-400 text-sm mb-2">Your redeem code</p>
+            <p className="text-2xl sm:text-3xl font-mono font-bold text-white tracking-widest">{claimCode}</p>
+          </div>
+          
+          <p className="text-slate-400 mb-6">
+            Send this code to <span className="text-white font-semibold">Alex Ryzer</span> on LinkedIn to redeem
+          </p>
+          
+          <a
+            href="https://www.linkedin.com/in/alexryzer/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 w-full py-4 rounded-xl text-white font-bold text-lg transition-all hover:opacity-90"
+            style={{ backgroundColor: BRAND_BLUE }}
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/>
+            </svg>
+            Message Alex
+          </a>
+          
+          <p className="text-gray-600 text-xs mt-6">
+            Screenshot this page to save your code
+          </p>
         </div>
+        
+        {/* Reset button */}
         <button
-          onClick={resetWheel}
-          className="fixed bottom-4 right-4 text-slate-600 hover:text-slate-400 text-sm transition-colors"
+          onClick={() => {
+            try { localStorage.removeItem('videoHeroWheel'); } catch(e) {}
+            window.location.reload();
+          }}
+          className="fixed bottom-4 right-4 text-transparent text-xs hover:text-slate-600"
         >
           Reset
         </button>
@@ -481,7 +544,6 @@ export default function SpinWheel() {
   // Main wheel screen
   return (
     <div className="min-h-screen flex flex-col items-center justify-evenly p-4 py-6 relative overflow-hidden" style={{ background: 'linear-gradient(180deg, #1e293b 0%, #0f172a 100%)' }}>
-      
       {/* Ambient glow behind wheel */}
       <div 
         className="absolute rounded-full blur-3xl opacity-30 pointer-events-none"
@@ -586,7 +648,7 @@ export default function SpinWheel() {
             />
             <path 
               d="M15 32 L7 10 Q5 5 10 5 L20 5 Q25 5 23 10 Z" 
-              fill="#f97316"
+              fill="#f59e0b"
             />
           </svg>
         </div>
@@ -617,15 +679,11 @@ export default function SpinWheel() {
               
               const midAngle = startAngle + segmentAngle / 2;
               const midRad = (midAngle * Math.PI) / 180;
+              const emojiX = 190 + 90 * Math.cos(midRad);
+              const emojiY = 190 + 90 * Math.sin(midRad);
+              const textX = 190 + 140 * Math.cos(midRad);
+              const textY = 190 + 140 * Math.sin(midRad);
               
-              const textRadius = 120;
-              const textX = 190 + textRadius * Math.cos(midRad);
-              const textY = 190 + textRadius * Math.sin(midRad);
-              
-              const emojiRadius = 75;
-              const emojiX = 190 + emojiRadius * Math.cos(midRad);
-              const emojiY = 190 + emojiRadius * Math.sin(midRad);
-
               return (
                 <g key={index}>
                   <path
@@ -661,77 +719,75 @@ export default function SpinWheel() {
             })}
             
             {/* Center circle */}
-            <circle cx="190" cy="190" r="35" fill="#1e293b" stroke="#334155" strokeWidth="4" />
-            <circle cx="190" cy="190" r="25" fill={BRAND_BLUE} />
+            <circle cx="190" cy="190" r="35" fill="#1F2937" stroke="#374151" strokeWidth="3" />
+            <circle cx="190" cy="190" r="24" fill={BRAND_BLUE} />
             
-            {/* Pegs around edge */}
-            {prizes.map((_, index) => {
-              const angle = index * segmentAngle - 90;
-              const rad = (angle * Math.PI) / 180;
-              const x = 190 + 175 * Math.cos(rad);
-              const y = 190 + 175 * Math.sin(rad);
+            {/* Pegs on segment dividers */}
+            {[...Array(6)].map((_, i) => {
+              const angle = (i * 60 - 90) * Math.PI / 180;
+              const x = 190 + 178 * Math.cos(angle);
+              const y = 190 + 178 * Math.sin(angle);
               return (
-                <circle key={`peg-${index}`} cx={x} cy={y} r="6" fill="#334155" stroke="#475569" strokeWidth="2" />
+                <circle key={`peg-${i}`} cx={x} cy={y} r="8" fill="#334155" stroke="#1e293b" strokeWidth="2" />
               );
             })}
           </svg>
         </div>
       </div>
       
-      {/* Bottom section */}
+      {/* Bottom section - results and button */}
       <div className="text-center relative z-10">
-        {/* Result Message */}
-        {showResult && result && result.tier !== 'retry' && (
-          <div className="mb-4">
-            {result.tier === 'win' || result.tier === 'jackpot' ? (
-              <>
-                <p className="text-xl text-white mb-2">🎉 You won: <span className="font-bold text-amber-400">{result.label}</span></p>
-                {claimCode && (
-                  <div className="bg-slate-800/50 rounded-xl px-6 py-3 inline-block">
-                    <p className="text-slate-400 text-sm mb-1">Your code:</p>
-                    <p className="text-2xl font-mono font-bold text-white tracking-wider">{claimCode}</p>
-                    <p className="text-slate-500 text-xs mt-2">DM this to @VideoHero on LinkedIn</p>
-                  </div>
-                )}
-              </>
-            ) : result.tier === 'lose' ? (
-              <p className="text-xl text-slate-400">Better luck next time! 😢</p>
-            ) : null}
+        {/* Spin Again message */}
+        {result && result.tier === 'retry' && !isSpinning && (
+          <div className="mb-2">
+            <p className="text-xl text-white font-semibold">🔄 Spin Again!</p>
+            <p className="text-gray-400 text-sm">You get another try</p>
           </div>
         )}
         
-        {showResult && result && result.tier === 'retry' && (
-          <div className="mb-4">
-            <p className="text-xl text-white">🎲 <span className="font-semibold text-amber-400">Spin Again!</span></p>
-            <p className="text-slate-400 text-sm">You get another try</p>
+        {/* Didn't Win message */}
+        {result && result.tier === 'lose' && !isSpinning && (
+          <div className="mb-2">
+            <p className="text-xl text-white font-semibold">😢 So close!</p>
+            <p className="text-gray-400 text-sm">One more chance...</p>
+          </div>
+        )}
+        
+        {/* Win message before transition */}
+        {result && result.tier !== 'retry' && result.tier !== 'lose' && hasWon && !showResult && (
+          <div className="mb-2">
+            <p className="text-2xl text-white font-bold">{result.emoji} You won!</p>
           </div>
         )}
         
         {/* Spin Button */}
-        {!hasWon && (
-          <button
-            onClick={spin}
-            disabled={isSpinning || showKeepOrSpin}
-            className="px-12 py-4 rounded-2xl text-white font-bold text-xl transition-all hover:scale-105 disabled:opacity-50 disabled:hover:scale-100 shadow-lg"
-            style={{ 
-              backgroundColor: usedExtraSpin && spinCount >= 2 ? '#ea580c' : BRAND_BLUE,
-              boxShadow: usedExtraSpin && spinCount >= 2 
-                ? '0 10px 40px rgba(234, 88, 12, 0.3)' 
-                : '0 10px 40px rgba(37, 99, 235, 0.3)'
-            }}
-          >
-            {isSpinning ? 'Spinning...' : 
-             result?.tier === 'retry' ? 'Spin Again!' : 
-             usedExtraSpin && spinCount >= 2 ? '🎰 Final Spin!' :
-             'Spin to Win'}
-          </button>
-        )}
+        <button
+          onClick={spin}
+          disabled={isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')}
+          className={`px-10 sm:px-16 py-3 sm:py-4 rounded-xl text-base sm:text-lg font-semibold text-white transition-all ${
+            isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')
+              ? 'bg-slate-700 cursor-not-allowed opacity-50'
+              : 'hover:opacity-90'
+          }`}
+          style={{ 
+            backgroundColor: (isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')) 
+              ? undefined 
+              : usedExtraSpin ? '#ea580c' : BRAND_BLUE,
+          }}
+        >
+          {isSpinning ? 'Spinning...' : hasWon ? 'Already Redeemed' : (result && result.tier === 'retry') ? 'Spin Again!' : usedExtraSpin ? 'Final Spin!' : 'Spin to Win'}
+        </button>
       </div>
+      
+
       
       {/* Reset button */}
       <button
-        onClick={resetWheel}
-        className="fixed bottom-4 right-4 text-slate-600 hover:text-slate-400 text-sm transition-colors z-50"
+        onClick={() => {
+          try { localStorage.removeItem('videoHeroWheel'); } catch(e) {}
+          window.location.reload();
+        }}
+        className="fixed bottom-4 right-4 text-transparent text-xs hover:text-slate-600"
       >
         Reset
       </button>
