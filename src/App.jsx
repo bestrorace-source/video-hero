@@ -760,23 +760,25 @@ export default function SpinningWheel() {
           </div>
         )}
         
-        {/* Spin Button */}
-        <button
-          onClick={spin}
-          disabled={isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')}
-          className={`px-10 sm:px-16 py-3 sm:py-4 rounded-xl text-base sm:text-lg font-semibold text-white transition-all ${
-            isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')
-              ? 'bg-slate-700 cursor-not-allowed opacity-50'
-              : 'hover:opacity-90'
-          }`}
-          style={{ 
-            backgroundColor: (isSpinning || hasWon || (result && result.tier !== 'retry' && result.tier !== 'lose')) 
-              ? undefined 
-              : usedExtraSpin ? '#ea580c' : BRAND_BLUE,
-          }}
-        >
-          {isSpinning ? 'Spinning...' : hasWon ? 'Already Redeemed' : (result && result.tier === 'retry') ? 'Spin Again!' : usedExtraSpin ? 'Final Spin!' : 'Spin to Win'}
-        </button>
+        {/* Spin Button - hidden after winning */}
+        {!hasWon && (
+          <button
+            onClick={spin}
+            disabled={isSpinning || (result && result.tier !== 'retry' && result.tier !== 'lose')}
+            className={`px-10 sm:px-16 py-3 sm:py-4 rounded-xl text-base sm:text-lg font-semibold text-white transition-all ${
+              isSpinning || (result && result.tier !== 'retry' && result.tier !== 'lose')
+                ? 'bg-slate-700 cursor-not-allowed opacity-50'
+                : 'hover:opacity-90'
+            }`}
+            style={{ 
+              backgroundColor: (isSpinning || (result && result.tier !== 'retry' && result.tier !== 'lose')) 
+                ? undefined 
+                : usedExtraSpin ? '#ea580c' : BRAND_BLUE,
+            }}
+          >
+            {isSpinning ? 'Spinning...' : (result && result.tier === 'retry') ? 'Spin Again!' : usedExtraSpin ? 'Final Spin!' : 'Spin to Win'}
+          </button>
+        )}
       </div>
       
 
